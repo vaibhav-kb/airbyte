@@ -55,6 +55,7 @@ dependencies {
 
     // Integration test dependencies
     integrationTestImplementation("com.amazon.redshift:redshift-jdbc42:$redshiftJdbcVersion")
+    integrationTestImplementation("com.zaxxer:HikariCP:$hikariCpVersion")
     integrationTestImplementation("org.testcontainers:postgresql:$testContainersVersion") // Redshift is Postgres-compatible
     integrationTestImplementation("org.junit.jupiter:junit-jupiter-api:$junitVersion")
     integrationTestImplementation("org.junit.jupiter:junit-jupiter:$junitVersion")
