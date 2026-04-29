@@ -423,6 +423,63 @@ jobs:
             --store "${REGISTRY_STORE}" \
             --with-validate
 
+      # Record stable source connector version changes so the
+      # notify-on-replication-version-change workflow can dispatch the
+      # exact published versions instead of scraping GitHub job names.
+      - name: Record published source connector version change
+        id: published-source-manifest
+        if: >-
+          success()
+          && github.event_name == 'push'
+          && startsWith(matrix.connector, 'source-')
+          && needs.publish_options.outputs.with-semver-suffix == 'none'
+          && needs.publish_options.outputs.dry-run != 'true'
+          && steps.publish-registry-artifacts.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONNECTOR="${{ matrix.connector }}"
+          VERSION="${{ steps.resolve-docker-image-tag.outputs.docker-image-tag }}"
+          METADATA_FILE="airbyte-integrations/connectors/${CONNECTOR}/metadata.yaml"
+          BASE_REF="${{ github.event.before }}"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Skipping $CONNECTOR (non-stable version: $VERSION)"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -z "$BASE_REF" || "$BASE_REF" =~ ^0+$ ]]; then
+            BASE_REF="HEAD~1"
+          elif ! git cat-file -e "${BASE_REF}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+          fi
+
+          if ! git cat-file -e "${BASE_REF}^{commit}" 2>/dev/null; then
+            BASE_REF="HEAD~1"
+          fi
+
+          PREVIOUS_VERSION=$(git show "${BASE_REF}:${METADATA_FILE}" 2>/dev/null | yq -r '.data.dockerImageTag // ""' -) || PREVIOUS_VERSION=""
+          if [[ "$VERSION" == "$PREVIOUS_VERSION" ]]; then
+            echo "Skipping $CONNECTOR (dockerImageTag unchanged: $VERSION)"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p ./published-sources
+          printf '{"connector":"%s","version":"%s"}\n' "$CONNECTOR" "$VERSION" > "./published-sources/${CONNECTOR}.json"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload published source manifest
+        if: steps.published-source-manifest.outputs.published == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: published-source-${{ matrix.connector }}
+          path: ./published-sources/${{ matrix.connector }}.json
+          retention-days: 7
+
       # Create the release_candidate/ metadata marker in GCS so the
       # platform knows an RC is active for this connector.  The marker
       # is read by the compile step and injected into the compiled
@@ -502,34 +559,6 @@ jobs:
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.PUBLISH_ON_MERGE_SLACK_WEBHOOK }}
-
-      # Record successfully published source connectors so the
-      # notify-on-replication-version-change workflow can detect them
-      # via artifact download instead of fragile job-name scraping.
-      - name: Record published source connector
-        if: >-
-          success()
-          && startsWith(matrix.connector, 'source-')
-          && needs.publish_options.outputs.with-semver-suffix == 'none'
-          && needs.publish_options.outputs.dry-run != 'true'
-        run: |
-          mkdir -p ./published-sources
-          jq -n \
-            --arg connector "${{ matrix.connector }}" \
-            --arg version "${{ steps.resolve-docker-image-tag.outputs.docker-image-tag }}" \
-            '{connector: $connector, version: $version}' \
-            > "./published-sources/${{ matrix.connector }}.json"
-      - name: Upload published source manifest
-        if: >-
-          success()
-          && startsWith(matrix.connector, 'source-')
-          && needs.publish_options.outputs.with-semver-suffix == 'none'
-          && needs.publish_options.outputs.dry-run != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: published-source-${{ matrix.connector }}
-          path: ./published-sources/${{ matrix.connector }}.json
-          retention-days: 1
 
   generate_connector_registry:
     name: Generate connector registry
